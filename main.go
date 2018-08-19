@@ -5,121 +5,71 @@ import (
 	"net/http"
 	"strings"
 	"encoding/json"
-	"strconv"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"math"
-	"github.com/rgamba/evtwebsocket"
-	"sync"
+	"io/ioutil"
+	"time"
+	"strconv"
 )
 
-// const address string = "wss://stream.binance.com:9443/ws/bnbbtc@trade"
-const addressPlaceholder string = "wss://stream.binance.com:9443/ws/%s@kline_1m"
-const symbolList string = "https://api.binance.com/api/v1/exchangeInfo"
+const returnTicker string = "https://api.idex.market/returnTicker"
 
-type socketMsg struct {
-	Info interface{} `json:"k"`
-}
-
-type exchangeInfo struct {
+type tickerList struct {
 	Symbols []symbol `json:"symbols"`
 }
 
 type symbol struct {
-	Symbol string `json:"symbol"`
-	QuoteAsset string `json:"quoteAsset"`
+	Last string `json:"last"`
+	PercentChange string `json:"percentChange"`
+	BaseVolume string `json:"baseVolume"`
+	QuoteVolume string `json:"quoteVolume"`
 }
 
-func getExchangeInfo() exchangeInfo {
-	response, err := http.Get(symbolList)
+func getExchangeInfo() map[string]symbol {
+	response, err := http.Get(returnTicker)
 	if err != nil {
 		panic(err)
 	} else {
 		data, _ := ioutil.ReadAll(response.Body)
-		fmt.Println(string(data))
-		exchInfo := exchangeInfo{}
-		err := json.Unmarshal(data, &exchInfo)
-		if err != nil {
-			panic(err)
-		}
-		log.Print(exchInfo)
-		return exchInfo
+		var newSymbolList map[string]symbol
+		json.Unmarshal(data, &newSymbolList)
+		return newSymbolList
 	}
 }
 
-var klineMap = map[string]klineInfo{}
-var mutex sync.Mutex
+var previousSymbolList map[string]symbol
+const dipThreashold float64 = 20.0
 
 func main() {
-	log.Println("Welcome")
 
-	// Get all trading symbols
-	exchangeInfoResponse := getExchangeInfo()
-	for _, element := range exchangeInfoResponse.Symbols {
-		if element.QuoteAsset == "BTC" {
-			socketAddress := fmt.Sprintf(addressPlaceholder, strings.ToLower(element.Symbol))
-			log.Print(socketAddress)
-
-			mutex.Lock()
-			klineMap[element.Symbol] = klineInfo{math.MaxInt64,0}
-			mutex.Unlock()
-
-			go func(socketAddress string) {
-				connection := evtwebsocket.Conn{
-
-					// When connection is established
-					OnConnected: func(w *evtwebsocket.Conn) {
-						log.Println("Connected")
-					},
-
-					// When a message arrives
-					OnMessage: func(msg []byte, w *evtwebsocket.Conn) {
-						//log.Printf("OnMessage: %s\n", msg)
-						checkSocketMessage(msg)
-					},
-
-					// When the client disconnects for any reason
-					OnError: func(err error) {
-						log.Printf("** ERROR **\n%s\n", err.Error())
-					},
-
-					// This is used to match the request and response messagesP>termina
-					MatchMsg: func(req, resp []byte) bool {
-						return string(req) == string(resp)
-					},
-
-					// Auto reconnect on error
-					Reconnect: true,
-
-					// Set the ping interval (optional)
-					// PingIntervalSecs: 50,
-
-					// Set the ping message (optional)
-					PingMsg: []byte("PING"),
-				}
-
-				// Connect
-				if err := connection.Dial(socketAddress, ""); err != nil {
-					log.Fatal(err)
-				}
-			}(socketAddress)
-			//if index > 100 {
-			//	break
-			//}
+	//sample := `{"ETH_DX":{"last":"80","high":"0.00000129","low":"0.00000112","lowestAsk":"0.000001219999982558","highestBid":"0.00000112","percentChange":"-12.5","baseVolume":"8.626480612675553493","quoteVolume":"7249641.978793682040393169"},
+	//			"ETH_AUC":{"last":"0.00023","high":"0.00023","low":"0.000200740231454066","lowestAsk":"0.000221978867611803","highestBid":"0.000211002014382012","percentChange":"6.47655201","baseVolume":"7.783199997744259321","quoteVolume":"36661.98265640783736685"}}`
+	//sample2 := `{"ETH_DX":{"last":"100","high":"0.00000129","low":"0.00000112","lowestAsk":"0.000001219999982558","highestBid":"0.00000112","percentChange":"-12.5","baseVolume":"8.626480612675553493","quoteVolume":"7249641.978793682040393169"},
+	//			"ETH_AUC":{"last":"0.00023","high":"0.00023","low":"0.000200740231454066","lowestAsk":"0.000221978867611803","highestBid":"0.000211002014382012","percentChange":"6.47655201","baseVolume":"7.783199997744259321","quoteVolume":"36661.98265640783736685"}}`
+	//
+	//byt := []byte(sample)
+	//byt2 := []byte(sample2)
+	//var newSymbolList map[string]symbol
+	//
+	//json.Unmarshal(byt2, &previousSymbolList)
+	//
+	//parseErr := json.Unmarshal(byt, &newSymbolList)
+	//if parseErr != nil {
+	//	panic(parseErr)
+	//}
+	log.Printf("Symbol Dip Volume PricePrevious PriceLast\n")
+	ticker := time.NewTicker(50 * time.Second)
+	go func() {
+		for _ = range ticker.C {
+			checkDips()
 		}
-	}
+	}()
 
-	//log.Print(klineMap)
-	//log.Print(klineMap["BNBBTC"])
-
-	// For testing purposes
-	//checkSocketMessage([]byte(jsonStream))
-
+	// Set new to previous one
 
 
 	http.HandleFunc("/", sayHello)
-	fmt.Println("Starting Server")
+	//fmt.Println("Starting Server")
 	err := http.ListenAndServe(":8087", nil)
 	if err != nil {
 		fmt.Printf("HTTP failed: %s\n", err.Error())
@@ -127,69 +77,98 @@ func main() {
 	}
 }
 
-type klineInfo struct{
-	OpenTime int
-	LowPrice float64
+func checkDips() {
+	var newSymbolList = getExchangeInfo()
+	//fmt.Printf("%s", newSymbolList)
+	// If there exists something to compare with
+	if previousSymbolList != nil {
+		// Got through all symbols and compare with previous values to check for dips
+		for symbol, _ := range newSymbolList {
+			previousPrice, e1 := strconv.ParseFloat(previousSymbolList[symbol].Last, 64)
+			if e1 != nil {
+				continue
+			}
+			newPrice, e2 := strconv.ParseFloat(newSymbolList[symbol].Last, 64)
+			if e2 != nil {
+				continue
+			}
+
+			//fmt.Printf("symbol = %s | %.2f <=> %.2f\n", symbol, newPrice, previousPrice)
+
+			if newPrice < previousPrice {
+
+				var percents =  (previousPrice - newPrice) / previousPrice * 100
+				// If there is a large dip, we put this out to log
+				if percents > dipThreashold {
+					f, _ := strconv.ParseFloat(newSymbolList[symbol].BaseVolume, 64)
+					log.Printf("%s %.2f %.2f %.10f %.10f\n", symbol, percents,f , previousPrice, newPrice)
+				}
+				//else{
+				//	log.Printf("N - %s = %.2f",symbol, percents)
+				//}
+			}
+		}
+	}
+	//log.Println("Nothing found this time")
+	previousSymbolList = newSymbolList
 }
 
-const dipThreashold float64 = 5.0
-//var existingKline klineInfo = klineInfo{math.MaxInt64,0}
 
-func checkSocketMessage(msgStream []byte) {
-
-	var message socketMsg
-	err := json.Unmarshal(msgStream, &message)
-	if err != nil {
-		log.Print(err)
-	}
-	//log.Print(message)
-
-	// Map message with mapper
-	obj := message.Info.(map[string]interface{})
-
-	// Get kline open time
-	openTime := int(obj["t"].(float64))
-
-	// Get close price
-	//closePrice, err := strconv.ParseFloat(obj["c"].(string), 64)
-	//if err != nil {
-	//	panic(err)
-	//}
-
-	// Get low price
-	lowPrice, err := strconv.ParseFloat(obj["l"].(string), 64)
-	if err != nil {
-		panic(err)
-	}
-	symbol := obj["s"].(string)
-	mutex.Lock()
-	existingKline := klineMap[symbol]
-
-	// New time frame kline
-	if existingKline.OpenTime < openTime {
-		// Get open price, to calculate actual dip
-		openPrice, err := strconv.ParseFloat(obj["o"].(string), 64)
-		if err != nil {
-			panic(err)
-		}
-
-		// Calculate dip in percent
-		dipPercent := (openPrice - existingKline.LowPrice) / openPrice * 100
-		//log.Print("Dip percent: ", dipPercent)
-		if dipPercent >= dipThreashold {
-			log.Print("FOUND DIP: ", dipPercent)
-			// Write this record into firebase
-			log.Printf("OnMessage: %s\n", msgStream)
-		}
-
-		klineMap[symbol] = klineInfo{openTime, lowPrice}
-
-	} else {
-		// We are working on same time kline
-		klineMap[symbol] = klineInfo{openTime, lowPrice,}
-	}
-	mutex.Unlock()
-}
+//func checkSocketMessage(msgStream []byte) {
+//
+//	var message socketMsg
+//	err := json.Unmarshal(msgStream, &message)
+//	if err != nil {
+//		log.Print(err)
+//	}
+//	//log.Print(message)
+//
+//	// Map message with mapper
+//	obj := message.Info.(map[string]interface{})
+//
+//	// Get kline open time
+//	openTime := int(obj["t"].(float64))
+//
+//	// Get close price
+//	//closePrice, err := strconv.ParseFloat(obj["c"].(string), 64)
+//	//if err != nil {
+//	//	panic(err)
+//	//}
+//
+//	// Get low price
+//	lowPrice, err := strconv.ParseFloat(obj["l"].(string), 64)
+//	if err != nil {
+//		panic(err)
+//	}
+//	symbol := obj["s"].(string)
+//	mutex.Lock()
+//	existingKline := klineMap[symbol]
+//
+//	// New time frame kline
+//	if existingKline.OpenTime < openTime {
+//		// Get open price, to calculate actual dip
+//		openPrice, err := strconv.ParseFloat(obj["o"].(string), 64)
+//		if err != nil {
+//			panic(err)
+//		}
+//
+//		// Calculate dip in percent
+//		dipPercent := (openPrice - existingKline.LowPrice) / openPrice * 100
+//		//log.Print("Dip percent: ", dipPercent)
+//		if dipPercent >= dipThreashold {
+//			log.Print("FOUND DIP: ", dipPercent)
+//			// Write this record into firebase
+//			log.Printf("OnMessage: %s\n", msgStream)
+//		}
+//
+//		klineMap[symbol] = klineInfo{openTime, lowPrice}
+//
+//	} else {
+//		// We are working on same time kline
+//		klineMap[symbol] = klineInfo{openTime, lowPrice,}
+//	}
+//	mutex.Unlock()
+//}
 
 func sayHello(w http.ResponseWriter, r *http.Request) {
 	message := r.URL.Path
