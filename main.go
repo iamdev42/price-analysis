@@ -1,28 +1,29 @@
 package main
 
 import (
-	"log"
-	"net/http"
-	"strings"
 	"encoding/json"
 	"fmt"
-	"os"
 	"io/ioutil"
-	"time"
+	"log"
+	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 )
 
 const returnTicker string = "https://api.idex.market/returnTicker"
+const logFileName string = "logfile.log"
 
 type tickerList struct {
 	Symbols []symbol `json:"symbols"`
 }
 
 type symbol struct {
-	Last string `json:"last"`
+	Last          string `json:"last"`
 	PercentChange string `json:"percentChange"`
-	BaseVolume string `json:"baseVolume"`
-	QuoteVolume string `json:"quoteVolume"`
+	BaseVolume    string `json:"baseVolume"`
+	QuoteVolume   string `json:"quoteVolume"`
 }
 
 func getExchangeInfo() map[string]symbol {
@@ -38,6 +39,7 @@ func getExchangeInfo() map[string]symbol {
 }
 
 var previousSymbolList map[string]symbol
+
 const dipThreashold float64 = 20.0
 
 func main() {
@@ -57,7 +59,21 @@ func main() {
 	//if parseErr != nil {
 	//	panic(parseErr)
 	//}
+
+	// Setup logging into file
+	f, err := os.OpenFile(logFileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening file: %v", err)
+	}
+	defer f.Close()
+
+	log.SetOutput(f)
+
+	log.Printf("-------------------------------------------------------------------\n")
+	log.Printf("------------------------ SCRIPT STARTING --------------------------\n")
+	log.Printf("-------------------------------------------------------------------\n")
 	log.Printf("Symbol Dip Volume PricePrevious PriceLast\n")
+	log.Printf("-------------------------------------------------------------------\n")
 	ticker := time.NewTicker(50 * time.Second)
 	go func() {
 		for _ = range ticker.C {
@@ -67,14 +83,26 @@ func main() {
 
 	// Set new to previous one
 
-
 	http.HandleFunc("/", sayHello)
+	http.HandleFunc("/log", readLog)
 	//fmt.Println("Starting Server")
-	err := http.ListenAndServe(":8087", nil)
-	if err != nil {
-		fmt.Printf("HTTP failed: %s\n", err.Error())
+	err2 := http.ListenAndServe(":8087", nil)
+	if err2 != nil {
+		fmt.Printf("HTTP failed: %s\n", err2.Error())
 		os.Exit(1)
 	}
+}
+
+func readLog(writer http.ResponseWriter, request *http.Request) {
+	b, err := ioutil.ReadFile(logFileName) // just pass the file name
+	if err != nil {
+		fmt.Print(err)
+	}
+
+	writer.Write(b)
+	//str := string(b) // convert content to a 'string'
+	//
+	//fmt.Println(str) // print the content as a 'string'
 }
 
 func checkDips() {
@@ -97,11 +125,11 @@ func checkDips() {
 
 			if newPrice < previousPrice {
 
-				var percents =  (previousPrice - newPrice) / previousPrice * 100
+				var percents = (previousPrice - newPrice) / previousPrice * 100
 				// If there is a large dip, we put this out to log
 				if percents > dipThreashold {
 					f, _ := strconv.ParseFloat(newSymbolList[symbol].BaseVolume, 64)
-					log.Printf("%s %.2f %.2f %.10f %.10f\n", symbol, percents,f , previousPrice, newPrice)
+					log.Printf("%s %.2f %.2f %.10f %.10f\n", symbol, percents, f, previousPrice, newPrice)
 				}
 				//else{
 				//	log.Printf("N - %s = %.2f",symbol, percents)
@@ -112,7 +140,6 @@ func checkDips() {
 	//log.Println("Nothing found this time")
 	previousSymbolList = newSymbolList
 }
-
 
 //func checkSocketMessage(msgStream []byte) {
 //
@@ -176,4 +203,3 @@ func sayHello(w http.ResponseWriter, r *http.Request) {
 	message = "Hello " + message
 	w.Write([]byte(message))
 }
-
